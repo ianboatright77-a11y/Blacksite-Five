@@ -428,7 +428,7 @@ test('leaving a lobby removes the player and transfers host control', () => {
 });
 
 test('HTTP room API supports create, join, and authenticated live state', async (t) => {
-  const { server } = createGameServer({ orderSeconds: 30 });
+  const { server } = createGameServer({ orderSeconds: 30, hosted: false });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const address = server.address();
