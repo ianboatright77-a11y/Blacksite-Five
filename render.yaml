@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: blacksite-five
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm test
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MAX_ROOMS
+        value: 500
+      - key: ADMISSION_LIMIT
+        value: 40
+      - key: ORDER_SECONDS
+        value: 45
+      - key: FIRST_ORDER_SECONDS
+        value: 90
+      - key: ROOM_TTL_HOURS
+        value: 12
+      - key: FINISHED_ROOM_TTL_HOURS
+        value: 1

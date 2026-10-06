@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#07110f">
+    <meta name="description" content="Blacksite Five — a live hidden-bunker strategy game for 2–4 commanders.">
+    <title>Blacksite Five</title>
+    <link rel="stylesheet" href="/styles.css?v=0.4.0">
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <main id="app" aria-live="polite"></main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script>
+      window.setTimeout(function () {
+        if (!window.__BLACKSITE_READY__) {
+          document.getElementById('app').innerHTML = '<div style="max-width:720px;margin:60px auto;padding:24px;color:#fff;background:#351b1a;border:1px solid #ff6b67;border-radius:14px;font:16px system-ui"><strong>Blacksite client did not load.</strong><p>Press Ctrl+Shift+R to refresh without cached files, then reopen the game address.</p></div>';
+        }
+      }, 2000);
+    </script>
+    <script src="/app.js?v=0.4.0" defer></script>
+  </body>
+</html>
