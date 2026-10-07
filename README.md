@@ -4,7 +4,7 @@ A live, browser-based hidden-bunker strategy game for 2–4 players. Every playe
 
 ## Play online from any network
 
-Build 0.4.0 includes a production server mode and a Render Blueprint. See [`DEPLOY-ONLINE.md`](DEPLOY-ONLINE.md) for the one-time deployment steps. Once live, create a room at the public HTTPS address and share the invitation; friends do not need Node.js or the project files.
+Build 0.5.0 includes a production server mode and a Render Blueprint. See [`DEPLOY-ONLINE.md`](DEPLOY-ONLINE.md) for the one-time deployment steps. Once live, create a room at the public HTTPS address and share the invitation; friends do not need Node.js or the project files.
 
 Hosted mode provides public invitation links, authenticated active-session presence, admission rate limiting, inactive-room cleanup, security headers, and an HTTP health check. The included free deployment keeps active games awake, although the first visit after a long idle period can take about a minute.
 
@@ -60,17 +60,17 @@ ORDER_SECONDS=8 FIRST_ORDER_SECONDS=12 npm start
 ## MVP coverage
 
 - Room-code create/join flow for 2–4 players
-- Private two-of-five bunker deployment and one-time troop exchange
+- Private two-of-five bunker deployment with optional starting defenders and a one-time troop exchange
 - Randomized free-for-all target ring
 - Simultaneous timed orders
 - 90-second opening day, 45-second later days, and three-second between-day cutaways
 - Platoon attacks, scouts, one- or two-troop fortification, travel, return, combat, and attrition
-- Hologram, UAV, Minefield, Napalm, Body Enhancers, Teleporter, and Signal Interceptor cards
+- Hologram, UAV, Minefield, Napalm, Body Enhancers, Teleporter, Signal Interceptor, and immediate-contact Air Raid cards
 - Eligible-only site choices for every location-based technology
 - Twenty plainly named troop types with illustrated card portraits
-- Original procedural military-tabletop background music with an on/off control
+- Original procedural mystery-command background music with a varied long-form sequence and an on/off control
 - Troop and technology reinforcements with 8-troop and 2-tech hand limits
-- Personalized multi-day activity logs, elimination, 30-day scoring, and live per-player state updates
+- Personalized multi-day activity logs, three-missed-order forfeits, bunker-only 30-day scoring and draws, and live per-player state updates
 - Confirmed exits with synchronized quit and forfeit end screens
 
 Game state is currently held in one server process. Restarting or redeploying the hosted service clears active rooms, so keep the deployment at one instance. Inactive rooms are automatically cleaned up after 12 hours and completed rooms after one hour.
@@ -81,4 +81,4 @@ Game state is currently held in one server process. Restarting or redeploying th
 - If a previous server is open, close its window before starting a newer build.
 - If the page appears stale, press `Ctrl+Shift+R` once to reload its scripts without cache.
 - The Create and Join forms preserve typed values during interface refreshes and show their connection status directly below their buttons.
-- Build 0.4.0 supports both local/LAN play and hosted HTTPS play. Hosted lobbies display an online invitation that works across different networks.
+- Build 0.5.0 supports both local/LAN play and hosted HTTPS play. Hosted lobbies display an online invitation that works across different networks.

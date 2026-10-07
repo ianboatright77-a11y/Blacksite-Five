@@ -57,6 +57,9 @@ test('browser client creates a room and renders the lobby', async (t) => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   vm.runInContext(source, context, { filename: 'app.js' });
   assert.match(app.innerHTML, /Create an operation/);
+  assert.match(app.innerHTML, /placeholder="-----"/);
+  assert.doesNotMatch(app.innerHTML, /data-action="(?:create|join)-room"/);
+  assert.equal(vm.runInContext('MYSTERY_BARS.length', context), 12);
 
   handlers.input({ target: { dataset: { draft: 'createName' }, value: 'Alpha' } });
   vm.runInContext('render()', context);
@@ -73,6 +76,9 @@ test('browser client creates a room and renders the lobby', async (t) => {
   assert.doesNotMatch(app.innerHTML, /Share code/);
   assert.match(app.innerHTML, /Fast takes 1 day/);
   assert.match(app.innerHTML, /Day 1 lasts 90 seconds/);
+  assert.match(app.innerHTML, /Starting defenders are optional/);
+  assert.match(app.innerHTML, /Three consecutive missed orders cause a forfeit/);
+  assert.doesNotMatch(app.innerHTML, /never arrives on its launch day/);
   assert.ok(stored.has('blacksite-five-session'));
 
   const lanInvitation = vm.runInContext(`
@@ -128,6 +134,26 @@ test('browser client creates a room and renders the lobby', async (t) => {
   assert.match(technologySiteControls.minefield, /Site 05/);
   assert.doesNotMatch(technologySiteControls.minefield, /Site 02|Site 03|Site 04/);
 
+  const airRaidControls = vm.runInContext(`
+    state.target = {
+      name: 'Bravo',
+      sites: [1, 2, 3, 4, 5].map((siteId) => ({ siteId, destroyed: false })),
+      intel: {}
+    };
+    state.me.handTroops = [
+      { id: 'air1', unit: 'Commando', power: 4, mobility: 3, art: 4 },
+      { id: 'air2', unit: 'Ranger', power: 3, mobility: 3, art: 3 }
+    ];
+    draft.troopIds = ['air1', 'air2'];
+    renderTechControls({ id: 'air-card', type: 'air_raid', name: 'Air Raid' });
+  `, context);
+  assert.match(airRaidControls, /Select 1–3 air-deployed troops/);
+  assert.match(airRaidControls, /Air Raid attack power <strong>7<\/strong>/);
+  assert.match(airRaidControls, /resolves immediately/);
+
+  const uavControls = vm.runInContext(`renderTechControls({ type: 'uav' });`, context);
+  assert.match(uavControls, /total bunker defense values—including armor/);
+
   vm.runInContext(`
     const alphaView = state.players.find((player) => player.id === state.me.id);
     state.players = [alphaView, {
@@ -158,6 +184,18 @@ test('browser client creates a room and renders the lobby', async (t) => {
   assert.match(app.innerHTML, /Bravo quit/);
   assert.doesNotMatch(app.innerHTML, /wins by forfeit/);
 
+  vm.runInContext(`
+    state.room.endReason = 'missed-orders';
+    state.room.isDraw = false;
+    state.room.quitPlayerId = null;
+    state.room.forfeitPlayerIds = ['bravo'];
+    state.room.winnerIds = [state.me.id];
+    state.players.find((player) => player.id === 'bravo').forfeited = true;
+    renderFinished();
+  `, context);
+  assert.match(app.innerHTML, /Alpha wins by forfeit/);
+  assert.match(app.innerHTML, /Bravo forfeited after missing three consecutive order windows/);
+
   vm.runInContext("state.room.phase = 'planning';", context);
   await handlers.click({
     target: { closest() { return { disabled: false, dataset: { action: 'leave-room' } }; } }
@@ -174,10 +212,17 @@ test('browser client creates a room and renders the lobby', async (t) => {
   assert.doesNotMatch(transition, /report|resolved/i);
 
   const missedTransition = vm.runInContext(`
-    state.room.transition = { completedDay: 2, nextDay: 3, until: Date.now() + 3_000, missedPlayerIds: ['bravo'] };
+    state.room.transition = { completedDay: 2, nextDay: 3, until: Date.now() + 3_000, missedOrder: true };
     renderTransition();
   `, context);
   assert.match(missedTransition, /Missing Orders/);
+
+  const privateNormalTransition = vm.runInContext(`
+    state.room.transition = { completedDay: 2, nextDay: 3, until: Date.now() + 3_000, missedOrder: false };
+    renderTransition();
+  `, context);
+  assert.match(privateNormalTransition, /Orders Received/);
+  assert.doesNotMatch(privateNormalTransition, /Missing Orders/);
 
   const troopLabels = vm.runInContext(`
     troopCard({ id: 'speed', unit: 'Ranger', power: 3, mobility: 3, art: 3 });
@@ -189,6 +234,11 @@ test('browser client creates a room and renders the lobby', async (t) => {
     techCard({ id: 'uav-card', type: 'uav', name: 'UAV Sweep', description: 'Scan' });
   `, context);
   assert.match(techPortrait, /assets\/tech\/uav\.jpg/);
+
+  const airRaidPortrait = vm.runInContext(`
+    techCard({ id: 'air-card', type: 'air_raid', name: 'Air Raid', description: 'Immediate attack' });
+  `, context);
+  assert.match(airRaidPortrait, /assets\/tech\/air-raid\.jpg/);
 
   const siteDetails = vm.runInContext(`
     state.constants = { ...state.constants, bunkerArmor: 2, maxGarrison: 2 };
@@ -228,7 +278,16 @@ test('browser client creates a room and renders the lobby', async (t) => {
   `, context);
   handlers.change({ target: { dataset: { change: 'setup-assignment', siteId: '1' }, value: 't1' } });
   assert.equal(vm.runInContext('draft.mulliganIds.length', context), 0);
-  assert.match(app.innerHTML, /troop-status">BUNKER/);
+  assert.match(app.innerHTML, /troop-status">DEFENDER/);
+
+  const optionalSetup = vm.runInContext(`
+    draft.setupSites = [1, 2];
+    draft.setupAssignments = {};
+    renderSetup();
+    app.innerHTML;
+  `, context);
+  assert.match(optionalSetup, /No starting defender/);
+  assert.match(optionalSetup, /data-action="submit-setup" >/);
 
   const twoTroopFortify = vm.runInContext(`
     state.room.phase = 'planning';
@@ -247,15 +306,31 @@ test('browser client creates a room and renders the lobby', async (t) => {
   assert.match(twoTroopFortify, /lock-order-countdown visible/);
   assert.equal(vm.runInContext('orderIsReady()', context), true);
 
+  const compactStanding = vm.runInContext(`renderScoreboard(true);`, context);
+  assert.match(compactStanding, /scoreboard compact/);
+  assert.match(compactStanding, /bunkers?/);
+  assert.match(compactStanding, /destroyed/);
+  assert.doesNotMatch(compactStanding, /score-number/);
+
   vm.runInContext(`
     state.room.phase = 'finished';
     state.room.endReason = 'day-limit';
+    state.room.isDraw = false;
+    state.room.forfeitPlayerIds = [];
     state.room.quitPlayerId = null;
     state.room.winnerIds = [state.me.id];
     state.players.find((player) => player.id === state.me.id).finalScore = 6;
     renderFinished();
   `, context);
-  assert.match(app.innerHTML, /more resources and battle achievements when Day 30 ended/);
+  assert.match(app.innerHTML, /higher bunker total: bunkers remaining plus bunkers destroyed/);
+
+  vm.runInContext(`
+    state.room.isDraw = true;
+    state.room.winnerIds = state.players.slice(0, 2).map((player) => player.id);
+    renderFinished();
+  `, context);
+  assert.match(app.innerHTML, /Day 30 ends in a draw/);
+  assert.match(app.innerHTML, /leading bunker totals are equal/);
 
   const portraitFiles = fs.readdirSync(path.join(__dirname, '..', 'public', 'assets', 'troops'))
     .filter((name) => /^troop-\d{2}\.jpg$/.test(name));
@@ -264,9 +339,14 @@ test('browser client creates a room and renders the lobby', async (t) => {
   const techPortraitFiles = fs.readdirSync(path.join(__dirname, '..', 'public', 'assets', 'tech'))
     .filter((name) => /\.jpg$/.test(name));
   assert.deepEqual(techPortraitFiles.sort(), [
-    'body-enhancers.jpg', 'hologram.jpg', 'minefield.jpg', 'napalm.jpg',
+    'air-raid.jpg', 'body-enhancers.jpg', 'hologram.jpg', 'minefield.jpg', 'napalm.jpg',
     'signal-interceptor.jpg', 'teleporter.jpg', 'uav.jpg'
   ]);
+
+  const styles = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
+  assert.match(styles, /\.lock-order-countdown\s*\{[^}]*border:\s*1px solid rgba\(117, 244, 211/s);
+  assert.match(styles, /\.lock-order-countdown\s*\{[^}]*background:\s*rgba\(7, 48, 39/s);
+  assert.match(styles, /\.operation-status[^}]*justify-items:\s*end/);
 
   vm.runInContext(`
     draft.setupSites = [1, 2];

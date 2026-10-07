@@ -14,8 +14,25 @@ const TECH_PORTRAITS = {
   napalm: 'napalm',
   cyberkinetics: 'body-enhancers',
   teleporter: 'teleporter',
-  radio_hacker: 'signal-interceptor'
+  radio_hacker: 'signal-interceptor',
+  air_raid: 'air-raid'
 };
+
+const MUSIC_BAR_SECONDS = 5.6;
+const MYSTERY_BARS = [
+  { root: 55.00, notes: [[1.35, 1.20], [3.85, 1.50]], drums: [0, 5] },
+  { root: 58.27, notes: [[0.70, 1.50], [2.80, 1.26], [4.90, 1.20]], drums: [0, 3, 7], snare: [6] },
+  { root: 51.91, notes: [[2.10, 1.20], [4.20, 1.41]], drums: [0, 6] },
+  { root: 61.74, notes: [[0.70, 1.19], [2.10, 1.50], [4.20, 1.78]], drums: [0, 4], horn: [3.45, 1.50] },
+  { root: 55.00, notes: [[1.40, 1.41], [3.50, 1.20]], drums: [0, 2, 7] },
+  { root: 65.41, notes: [[0.70, 1.12], [2.80, 1.50], [4.90, 1.26]], drums: [0, 5], snare: [3] },
+  { root: 49.00, notes: [[2.10, 1.50], [4.20, 1.19]], drums: [0, 6] },
+  { root: 58.27, notes: [[0.70, 1.26], [2.10, 1.50], [3.50, 1.78]], drums: [0, 4, 7], horn: [4.15, 1.20] },
+  { root: 51.91, notes: [[1.40, 1.20], [4.20, 1.50]], drums: [0, 3] },
+  { root: 46.25, notes: [[0.70, 1.50], [2.80, 1.19], [4.90, 1.41]], drums: [0, 5, 7], snare: [6] },
+  { root: 61.74, notes: [[2.10, 1.26], [3.50, 1.50]], drums: [0, 4] },
+  { root: 55.00, notes: [[0.70, 1.20], [2.80, 1.50], [4.20, 2.00]], drums: [0, 2, 6], horn: [3.50, 1.00] }
+];
 
 let session = readSession();
 let landingDraft = readLandingDraft();
@@ -146,20 +163,39 @@ function scheduleBrass(time, frequency, duration, volume = 0.04) {
   }
 }
 
+function scheduleAtmosphere(time, duration, frequency, volume = 0.009) {
+  if (!audioContext || !musicMaster || !noiseBuffer) return;
+  const source = audioContext.createBufferSource();
+  const filter = audioContext.createBiquadFilter();
+  const gain = audioContext.createGain();
+  source.buffer = noiseBuffer;
+  source.loop = true;
+  filter.type = 'bandpass';
+  filter.frequency.value = frequency;
+  filter.Q.value = 0.7;
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.exponentialRampToValueAtTime(volume, time + 0.8);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+  source.connect(filter).connect(gain).connect(musicMaster);
+  source.start(time);
+  source.stop(time + duration + 0.03);
+}
+
 function scheduleMusicBar() {
   if (!audioContext || audioContext.state !== 'running') return;
-  const roots = [65.41, 73.42, 61.74, 55];
-  const root = roots[musicBar % roots.length];
+  const bar = MYSTERY_BARS[musicBar % MYSTERY_BARS.length];
+  const root = bar.root;
   const start = audioContext.currentTime + 0.06;
-  scheduleTone(start, root, 4.65, 0.035, 'sine');
-  scheduleTone(start, root * 1.5, 4.65, 0.018, 'triangle');
-  scheduleBrass(start + 0.12, root * 2, 0.72, 0.035);
-  scheduleBrass(start + 2.52, root * 1.5, 0.82, 0.032);
-  for (let beat = 0; beat < 8; beat += 1) {
-    const at = start + beat * 0.6;
-    scheduleDrum(at, beat === 0 || beat === 4);
-    if (beat === 2 || beat === 6) scheduleSnare(at);
+  scheduleTone(start, root, MUSIC_BAR_SECONDS - 0.12, 0.026, 'sine');
+  scheduleTone(start + 0.05, root * 1.5, MUSIC_BAR_SECONDS - 0.24, 0.011, 'triangle');
+  scheduleAtmosphere(start, MUSIC_BAR_SECONDS - 0.08, 320 + (musicBar % 4) * 75);
+  for (const [offset, interval] of bar.notes) {
+    scheduleTone(start + offset, root * interval * 2, 0.72, 0.018, 'sine');
+    scheduleTone(start + offset + 0.04, root * interval, 1.05, 0.01, 'triangle');
   }
+  for (const beat of bar.drums) scheduleDrum(start + beat * 0.7, beat === 0);
+  for (const beat of bar.snare || []) scheduleSnare(start + beat * 0.7);
+  if (bar.horn) scheduleBrass(start + bar.horn[0], root * bar.horn[1], 0.68, 0.022);
   musicBar += 1;
 }
 
@@ -182,7 +218,7 @@ function startMusic() {
     musicStarting = false;
     if (!musicEnabled || musicTimer) return;
     scheduleMusicBar();
-    musicTimer = setInterval(scheduleMusicBar, 4800);
+    musicTimer = setInterval(scheduleMusicBar, MUSIC_BAR_SECONDS * 1000);
   }).catch(() => { musicStarting = false; });
 }
 
@@ -442,7 +478,7 @@ function renderLanding() {
           <span class="feature-chip">2–4 commanders</span>
           <span class="feature-chip">Simultaneous orders</span>
           <span class="feature-chip">Private intelligence</span>
-          <span class="feature-chip">Online build 0.4.0</span>
+          <span class="feature-chip">Online build 0.5.0</span>
         </div>
       </div>
       <div class="command-card">
@@ -450,14 +486,14 @@ function renderLanding() {
         <h2>Create an operation</h2>
         <form id="create-form" class="form-stack">
           <label class="field"><span>Commander name</span><input name="name" data-draft="createName" maxlength="20" autocomplete="nickname" value="${esc(landingDraft.createName)}" placeholder="e.g. Nightjar" required></label>
-          <button class="btn btn-primary btn-wide" type="submit" data-action="create-room">Create room</button>
+          <button class="btn btn-primary btn-wide" type="submit">Create room</button>
           <div id="create-status" class="form-status">Ready to contact the game server.</div>
         </form>
         <div class="divider">OR JOIN BY CODE</div>
         <form id="join-form" class="form-stack">
-          <label class="field"><span>Room code</span><input class="code-input" name="code" data-draft="joinCode" maxlength="5" value="${esc(landingDraft.joinCode)}" placeholder="Q7KPX" required></label>
+          <label class="field"><span>Room code</span><input class="code-input" name="code" data-draft="joinCode" maxlength="5" value="${esc(landingDraft.joinCode)}" placeholder="-----" required></label>
           <label class="field"><span>Commander name</span><input name="name" data-draft="joinName" maxlength="20" autocomplete="nickname" value="${esc(landingDraft.joinName)}" placeholder="e.g. Vesper" required></label>
-          <button class="btn btn-wide" type="submit" data-action="join-room">Join operation</button>
+          <button class="btn btn-wide" type="submit">Join operation</button>
           <div id="join-status" class="form-status"></div>
         </form>
       </div>
@@ -505,12 +541,13 @@ function renderLobby() {
         <div class="panel-header"><div class="panel-title"><span class="kicker">Mission briefing</span><h2>The operation</h2></div></div>
         <div class="briefing">
           <div class="brief-item"><span class="brief-index">01</span><span><strong>One turn equals one day.</strong><small>Day 1 lasts 90 seconds; every later day lasts 45. Everyone submits one secret order, then all orders resolve together.</small></span></div>
-          <div class="brief-item"><span class="brief-index">02</span><span><strong>Power wins battles; mobility sets travel.</strong><small>Fast takes 1 day, Medium takes 2, and Slow takes 3. A platoon moves at its slowest troop's speed, and a new mission never arrives on its launch day.</small></span></div>
-          <div class="brief-item"><span class="brief-index">03</span><span><strong>Hide and defend two real bunkers.</strong><small>Choose two of five sites, begin with one defender in each, and fortify one or two troops at once up to a two-defender maximum. Each real bunker adds +2 armor in combat.</small></span></div>
+          <div class="brief-item"><span class="brief-index">02</span><span><strong>Power wins battles; mobility sets travel.</strong><small>Fast takes 1 day, Medium takes 2, and Slow takes 3. A platoon moves at its slowest troop's speed; returning troops use the same travel time.</small></span></div>
+          <div class="brief-item"><span class="brief-index">03</span><span><strong>Hide and defend two real bunkers.</strong><small>Choose two of five sites. Starting defenders are optional, and you can later fortify one or two troops at once up to a two-defender maximum. Each real bunker adds +2 armor in combat.</small></span></div>
           <div class="brief-item"><span class="brief-index">04</span><span><strong>Scouts are silent.</strong><small>Send one troop to learn occupied or clear. Scouts never attack, alert the enemy, or trigger mines; holograms read as occupied, and reports arrive after the full round trip.</small></span></div>
           <div class="brief-item"><span class="brief-index">05</span><span><strong>Attacks commit 1–3 troops.</strong><small>Total power must exceed defenders plus +2 bunker armor. Contact alerts the defender. Failure loses the platoon; victory destroys the bunker but costs one random attacker. Survivors—or troops finding an empty site—return after the full round trip.</small></span></div>
           <div class="brief-item"><span class="brief-index">06</span><span><strong>Reinforcements follow the calendar.</strong><small>Every fifth day can bring one troop card; every tenth can bring one technology card. Hands hold at most 8 troops and 2 technologies.</small></span></div>
-          <div class="brief-item"><span class="brief-index">07</span><span><strong>Break the command ring.</strong><small>Destroy both bunkers of your assigned target, then inherit the next surviving target. The last commander standing wins.</small></span></div>
+          <div class="brief-item"><span class="brief-index">07</span><span><strong>Break the command ring.</strong><small>Destroy both bunkers of your assigned target, then inherit the next surviving target. Three consecutive missed orders cause a forfeit.</small></span></div>
+          <div class="brief-item"><span class="brief-index">08</span><span><strong>Win the operation.</strong><small>The last commander standing wins. At the end of Day 30, each commander's total is bunkers remaining plus bunkers destroyed; equal leading totals produce a draw.</small></span></div>
         </div>
       </aside>
     </div>
@@ -542,7 +579,7 @@ function techCard(tech, interactive = false, selected = false) {
 function setupSite(siteId) {
   const selected = draft.setupSites.includes(siteId);
   return `<button type="button" class="site interactive${selected ? ' selected' : ''}" data-action="toggle-setup-site" data-site-id="${siteId}">
-    <span class="site-number">SITE 0${siteId}</span><span class="site-state">${selected ? 'REAL BUNKER' : 'UNASSIGNED'}</span><span class="site-meta">${selected ? 'Select its starting garrison below.' : 'Tap to activate this location.'}</span>
+    <span class="site-number">SITE 0${siteId}</span><span class="site-state">${selected ? 'REAL BUNKER' : 'UNASSIGNED'}</span><span class="site-meta">${selected ? 'Starting garrison is optional.' : 'Tap to activate this location.'}</span>
   </button>`;
 }
 
@@ -562,13 +599,14 @@ function renderSetup() {
   const assignments = draft.setupSites.map((siteId) => {
     const usedElsewhere = Object.entries(draft.setupAssignments).filter(([key]) => Number(key) !== siteId).map(([, value]) => value);
     const options = state.me.handTroops.map((troop) => `<option value="${troop.id}" ${draft.setupAssignments[siteId] === troop.id ? 'selected' : ''} ${usedElsewhere.includes(troop.id) ? 'disabled' : ''}>${esc(troop.unit)} · Power ${troop.power} · ${mobilityLabel(troop.mobility)}</option>`).join('');
-    return `<label class="assignment"><strong>SITE 0${siteId}</strong><select data-change="setup-assignment" data-site-id="${siteId}"><option value="">Choose defender…</option>${options}</select></label>`;
+    return `<label class="assignment"><strong>SITE 0${siteId}</strong><select data-change="setup-assignment" data-site-id="${siteId}"><option value="">No starting defender</option>${options}</select></label>`;
   }).join('');
-  const canDeploy = draft.setupSites.length === 2 && draft.setupSites.every((siteId) => draft.setupAssignments[siteId]) && new Set(Object.values(draft.setupAssignments)).size >= 2;
+  const startingDefenderIds = Object.values(draft.setupAssignments).filter(Boolean);
+  const canDeploy = draft.setupSites.length === 2 && new Set(startingDefenderIds).size === startingDefenderIds.length;
   const canMulligan = !state.me.mulliganUsed && draft.mulliganIds.length > 0 && draft.mulliganIds.length <= 2;
   const assignedTroopIds = new Set(Object.values(draft.setupAssignments).filter(Boolean));
   app.innerHTML = `${renderTopbar()}<div class="shell">
-    <div class="stage-header"><div><p class="eyebrow">Classified deployment</p><h1>Hide the operation</h1><p>Activate exactly two sites and assign one troop to defend each.</p></div><span class="tag">Private view</span></div>
+    <div class="stage-header"><div><p class="eyebrow">Classified deployment</p><h1>Hide the operation</h1><p>Activate exactly two sites. Starting garrisons are optional.</p></div><span class="tag">Private view</span></div>
     <div class="setup-layout">
       <div class="stack">
         <section class="panel">
@@ -578,13 +616,13 @@ function renderSetup() {
         </section>
         <section class="panel">
           <div class="panel-header"><div class="panel-title"><span class="kicker">Step 2</span><h2>Review your troop roster</h2></div><button class="btn btn-small" data-action="mulligan" ${canMulligan ? '' : 'disabled'}>${state.me.mulliganUsed ? 'Exchange used' : `Exchange selected (${draft.mulliganIds.length}/2)`}</button></div>
-          <p class="subtle tiny">Before deployment, select up to two troops to exchange once. Assigned defenders are removed from your mobile hand.</p>
+          <p class="subtle tiny">Before deployment, select up to two troops to exchange once. Any optional starting defenders are removed from your mobile hand.</p>
           <div class="troop-grid">${state.me.handTroops.map((troop) => {
             const assigned = assignedTroopIds.has(troop.id);
             return troopCard(troop, {
               action: state.me.mulliganUsed || assigned ? null : 'toggle-mulligan',
               disabled: assigned,
-              status: assigned ? 'BUNKER' : null,
+              status: assigned ? 'DEFENDER' : null,
               selected: draft.mulliganIds.includes(troop.id)
             });
           }).join('')}</div>
@@ -635,11 +673,15 @@ function ownSiteCard(site) {
   </div>`;
 }
 
-function renderScoreboard() {
-  return `<div class="scoreboard">${state.players.map((player) => `<div class="score-card${player.eliminated ? ' eliminated' : ''}" style="--player:${esc(player.color)}">
-    <div class="score-top"><span class="score-name">${esc(player.name)}${player.id === state.me.id ? ' · YOU' : ''}</span><span class="score-number">${player.finalScore ?? player.score}</span></div>
-    <div class="score-meta">${player.quit ? 'QUIT' : player.eliminated ? 'ELIMINATED' : `${player.bunkersRemaining ?? 0} bunker${player.bunkersRemaining === 1 ? '' : 's'} · ${player.bunkersDestroyed} destroyed`}</div>
-  </div>`).join('')}</div>`;
+function renderScoreboard(compact = false) {
+  return `<div class="scoreboard${compact ? ' compact' : ''}">${state.players.map((player) => {
+    const status = player.quit ? 'QUIT' : player.forfeited ? 'FORFEIT' : player.eliminated ? 'ELIMINATED' : 'ACTIVE';
+    return `<div class="score-card${player.eliminated ? ' eliminated' : ''}" style="--player:${esc(player.color)}">
+      <div class="score-name">${esc(player.name)}${player.id === state.me.id ? ' · YOU' : ''}</div>
+      <div class="score-status">${status}</div>
+      <div class="score-meta"><span>${player.bunkersRemaining ?? 0} bunker${player.bunkersRemaining === 1 ? '' : 's'}</span><span>${player.bunkersDestroyed} destroyed</span></div>
+    </div>`;
+  }).join('')}</div>`;
 }
 
 function selectableTargetSites(qualifier = () => true, hideIneligible = false, emptyMessage = 'No eligible enemy sites are available.') {
@@ -677,7 +719,7 @@ function selectedTech() {
 function renderTechControls(tech) {
   if (!tech) return '<div class="empty-state">Select a technology card to configure it.</div>';
   if (tech.type === 'hologram') return `<div><p class="selection-label">Choose a clean empty site</p>${selectableOwnSites((site) => site.kind === 'empty' && !site.hologram && !state.me.sites.some((candidate) => candidate.hologram), true, 'No clean empty site is available for a hologram.')}</div>`;
-  if (tech.type === 'uav') return `<div class="order-summary">The scan will report each of ${esc(state.target?.name)}'s bunker power values as anonymous readings, without revealing which site holds either reading.</div>`;
+  if (tech.type === 'uav') return `<div class="order-summary">The scan will report each of ${esc(state.target?.name)}'s total bunker defense values—including armor—as anonymous readings, without revealing which site holds either reading.</div>`;
   if (tech.type === 'minefield') return `<div><p class="selection-label">Mine one approach</p>${selectableOwnSites((site) => site.kind !== 'destroyed' && !site.mine, true, 'Every valid approach is already mined.')}</div>`;
   if (tech.type === 'napalm') {
     const eligible = (site) => {
@@ -693,6 +735,11 @@ function renderTechControls(tech) {
     return `<div class="order-builder"><label class="field"><span>Move real bunker</span><select data-change="teleport-from"><option value="">Choose origin…</option>${origins.map((site) => `<option value="${site.siteId}" ${draft.fromSiteId === site.siteId ? 'selected' : ''}>Site 0${site.siteId} · ${site.defenders.length} defenders lost</option>`).join('')}</select></label><label class="field"><span>New empty site</span><select data-change="teleport-to"><option value="">Choose destination…</option>${destinations.map((site) => `<option value="${site.siteId}" ${draft.toSiteId === site.siteId ? 'selected' : ''}>Site 0${site.siteId}</option>`).join('')}</select></label></div>`;
   }
   if (tech.type === 'radio_hacker') return '<div class="order-summary">The Signal Interceptor monitors platoons approaching any of your five sites for five days. Intercepts include destination, troop count, and arrival day.</div>';
+  if (tech.type === 'air_raid') {
+    const troops = selectedTroops();
+    const power = troops.reduce((sum, troop) => sum + troop.power, 0);
+    return `<div class="order-builder"><div><p class="selection-label">Choose an enemy site</p>${selectableTargetSites()}</div><div><p class="selection-label">Select 1–3 air-deployed troops</p>${selectableTroops(3)}</div>${troops.length ? `<div class="order-summary">Air Raid attack power <strong>${power}</strong> · contact resolves immediately with normal combat and attrition rules. Survivors use their normal travel time to return.</div>` : '<div class="order-summary">Air Raid bypasses outbound travel and resolves its attack immediately.</div>'}</div>`;
+  }
   return '';
 }
 
@@ -713,6 +760,7 @@ function orderIsReady() {
   if (tech.type === 'napalm') return Boolean(draft.siteId);
   if (tech.type === 'cyberkinetics') return draft.troopIds.length === 1;
   if (tech.type === 'teleporter') return Boolean(draft.fromSiteId && draft.toSiteId && draft.fromSiteId !== draft.toSiteId);
+  if (tech.type === 'air_raid') return Boolean(draft.siteId && draft.troopIds.length >= 1 && draft.troopIds.length <= 3);
   return false;
 }
 
@@ -764,7 +812,7 @@ function renderEvents(showAll = false) {
 function renderTransition() {
   const transition = state.room.transition;
   if (!transition || transition.until <= Date.now()) return '';
-  const missing = Array.isArray(transition.missedPlayerIds) && transition.missedPlayerIds.length > 0;
+  const missing = Boolean(transition.missedOrder);
   return `<div class="transition-overlay" role="status" aria-live="assertive">
     <div class="transition-card">
       <div class="transition-scan" aria-hidden="true"></div>
@@ -782,15 +830,14 @@ function renderGame() {
     ? '<div class="waiting"><div><div class="waiting-icon">OFF</div><h2>Command network eliminated</h2><p class="subtle">You can continue watching the remaining operation.</p></div></div>'
     : state.me.order ? renderWaitingOrder() : renderOrderBuilder();
   const uav = state.me.uavReport && state.target && state.me.uavReport.targetId === state.target.id
-    ? `<div class="intel-report"><strong>Latest UAV sweep · Day ${state.me.uavReport.day}</strong><br>Anonymous bunker power reading${state.me.uavReport.bunkerPowers.length === 1 ? '' : 's'}: ${state.me.uavReport.bunkerPowers.join(' · ')}</div>`
+    ? `<div class="intel-report"><strong>Latest UAV sweep · Day ${state.me.uavReport.day}</strong><br>Anonymous total defense reading${state.me.uavReport.bunkerDefenses.length === 1 ? '' : 's'}: ${state.me.uavReport.bunkerDefenses.join(' · ')}</div>`
     : '';
-  app.innerHTML = `${renderTopbar()}<div class="shell">
-    <div class="stage-header">
+  app.innerHTML = `${renderTopbar()}<div class="shell game-shell">
+    <div class="stage-header operation-header">
       <div><p class="eyebrow">Active operation</p><h1>Day ${state.room.day}: issue one order</h1><p>You hunt <strong style="color:${esc(state.target?.color || '#fff')}">${esc(targetName)}</strong>${state.hunter ? ` while <strong style="color:${esc(state.hunter.color)}">${esc(state.hunter.name)}</strong> hunts you.` : '.'}</p></div>
-      ${state.me.radioHackerUntil >= state.room.day ? `<span class="tag">Signal watch through D${state.me.radioHackerUntil}</span>` : ''}
+      <div class="operation-status">${state.me.radioHackerUntil >= state.room.day ? `<span class="tag">Signal watch through D${state.me.radioHackerUntil}</span>` : ''}${renderScoreboard(true)}</div>
     </div>
-    ${renderScoreboard()}
-    <div class="game-grid" style="margin-top:18px">
+    <div class="game-grid">
       <div class="main-column">
         <section class="panel">
           <div class="panel-header"><div class="panel-title"><span class="kicker">Friendly network · classified</span><h2>Your five sites</h2></div><span class="tag">Armor +2</span></div>
@@ -817,7 +864,9 @@ function renderGame() {
 function renderFinished() {
   const winners = state.players.filter((player) => state.room.winnerIds.includes(player.id));
   const won = state.room.winnerIds.includes(state.me.id);
+  const draw = Boolean(state.room.isDraw);
   const quitter = state.players.find((player) => player.id === state.room.quitPlayerId);
+  const forfeited = state.players.filter((player) => state.room.forfeitPlayerIds?.includes(player.id));
   const quitEnded = state.room.endReason === 'quit';
   let heading;
   let resultCopy;
@@ -830,24 +879,28 @@ function renderFinished() {
     heading = `${esc(quitter?.name || 'A commander')} quit`;
     resultCopy = 'The operation ended because a commander left the game.';
     sigil = 'Q';
-  } else if (state.room.endReason === 'day-limit') {
-    heading = winners.length > 1
-      ? 'Day 30 ends in a tie'
-      : won ? 'Victory secured' : `${esc(winners[0]?.name || 'The leading commander')} wins`;
-    resultCopy = winners.length > 1
-      ? 'The command score remains tied after every tiebreak.'
-      : `${esc(winners[0]?.name || 'The winning commander')} had more resources and battle achievements when Day 30 ended.`;
-    sigil = won ? 'V' : winners.length > 1 ? '=' : 'X';
-  } else {
-    heading = won ? 'Victory secured' : `${esc(winners.map((player) => player.name).join(' & '))} wins`;
-    resultCopy = winners.length > 1
-      ? 'The command score remains tied after every tiebreak.'
-      : won ? 'Every enemy bunker network has been neutralized.' : 'All of your bunkers were destroyed.';
+  } else if (state.room.endReason === 'missed-orders' && winners[0]) {
+    heading = `${esc(winners[0].name)} wins by forfeit`;
+    resultCopy = `${esc(forfeited.map((player) => player.name).join(' & ') || 'The opposing commander')} forfeited after missing three consecutive order windows.`;
     sigil = won ? 'V' : 'X';
+  } else if (state.room.endReason === 'day-limit') {
+    heading = draw
+      ? 'Day 30 ends in a draw'
+      : won ? 'Victory secured' : `${esc(winners[0]?.name || 'The leading commander')} wins`;
+    resultCopy = draw
+      ? 'The leading bunker totals are equal: bunkers remaining plus bunkers destroyed.'
+      : `${esc(winners[0]?.name || 'The winning commander')} finished with the higher bunker total: bunkers remaining plus bunkers destroyed.`;
+    sigil = draw ? '=' : won ? 'V' : 'X';
+  } else {
+    heading = draw ? 'Operation ends in a draw' : won ? 'Victory secured' : `${esc(winners.map((player) => player.name).join(' & '))} wins`;
+    resultCopy = draw
+      ? 'The leading bunker totals are equal.'
+      : won ? 'Every enemy bunker network has been neutralized.' : 'All of your bunkers were destroyed.';
+    sigil = draw ? '=' : won ? 'V' : 'X';
   }
   app.innerHTML = `${renderTopbar()}<div class="shell">
     <section class="panel result-hero"><div class="result-sigil">${sigil}</div><p class="eyebrow">Operation complete</p><h1>${heading}</h1><p>${resultCopy}</p></section>
-    <section class="panel" style="margin-top:18px"><div class="panel-header"><div class="panel-title"><span class="kicker">Final standing</span><h2>Command scores</h2></div></div>${renderScoreboard()}<div class="footer-actions"><button class="btn btn-primary" data-action="return-title">Return to title</button></div></section>
+    <section class="panel" style="margin-top:18px"><div class="panel-header"><div class="panel-title"><span class="kicker">Final standing</span><h2>Bunker standings</h2></div></div>${renderScoreboard()}<div class="footer-actions"><button class="btn btn-primary" data-action="return-title">Return to title</button></div></section>
     <section class="panel" style="margin-top:18px"><div class="panel-header"><div class="panel-title"><span class="kicker">Debrief</span><h2>Operation log</h2></div></div>${renderEvents(true)}</section>
   </div>`;
 }
@@ -885,6 +938,7 @@ function buildOrder() {
   else if (tech.type === 'napalm') order.siteId = draft.siteId;
   else if (tech.type === 'cyberkinetics') order.troopId = draft.troopIds[0];
   else if (tech.type === 'teleporter') Object.assign(order, { fromSiteId: draft.fromSiteId, toSiteId: draft.toSiteId });
+  else if (tech.type === 'air_raid') Object.assign(order, { siteId: draft.siteId, troopIds: draft.troopIds });
   return order;
 }
 
@@ -977,11 +1031,7 @@ app.addEventListener('click', async (event) => {
   if (!button || button.disabled) return;
   const action = button.dataset.action;
   if (musicEnabled && session && action !== 'toggle-music') startMusic();
-  if (action === 'create-room' || action === 'join-room') {
-    event.preventDefault();
-    const form = button.closest('form');
-    if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-  } else if (action === 'copy-room') {
+  if (action === 'copy-room') {
     await loadServerConfig();
     if (isLoopbackOrigin() && serverConfig.mode !== 'hosted' && !serverConfig.lanUrls.length) {
       showToast('No LAN address detected. localhost cannot be opened from another device.', true);
@@ -1030,7 +1080,7 @@ app.addEventListener('click', async (event) => {
     await mutate('mulligan', { troopIds: draft.mulliganIds });
     draft.mulliganIds = [];
   } else if (action === 'submit-setup') {
-    const bunkers = draft.setupSites.map((siteId) => ({ siteId, troopId: draft.setupAssignments[siteId] }));
+    const bunkers = draft.setupSites.map((siteId) => ({ siteId, troopId: draft.setupAssignments[siteId] || null }));
     await mutate('setup', { bunkers });
   } else if (action === 'select-order-type') {
     resetOrderDraft();
@@ -1056,6 +1106,8 @@ app.addEventListener('click', async (event) => {
       ? 3
       : draft.orderType === 'fortify'
         ? Math.max(1, Math.min(2, fortifySite ? state.constants.maxGarrison - fortifySite.defenders.length : 2))
+        : draft.orderType === 'tech' && selectedTech()?.type === 'air_raid'
+          ? 3
         : 1;
     if (draft.troopIds.includes(troopId)) draft.troopIds = draft.troopIds.filter((id) => id !== troopId);
     else if (draft.troopIds.length < limit) draft.troopIds.push(troopId);

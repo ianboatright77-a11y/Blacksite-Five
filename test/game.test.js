@@ -11,7 +11,8 @@ const {
   quitGame,
   expirePlanning,
   serializeState,
-  remainingBunkers
+  remainingBunkers,
+  gameScore
 } = require('../game');
 const { createGameServer } = require('../server');
 
@@ -52,6 +53,21 @@ test('setup creates private bunkers and begins simultaneous Day 1', () => {
   const enemyView = serializeState(room, alpha.id).target;
   assert.equal(enemyView.bunkersRemaining, 2);
   assert.equal(enemyView.sites.some((site) => 'kind' in site), false);
+});
+
+test('starting bunker defenders are optional', () => {
+  const { room, player: alpha } = createRoom('EMPTY', 'Alpha', { rng: () => 0.17 });
+  const bravo = addPlayer(room, 'Bravo');
+  startGame(room, alpha.id);
+
+  submitSetup(room, alpha.id, [{ siteId: 1 }, { siteId: 4 }]);
+  submitSetup(room, bravo.id, [{ siteId: 2, troopId: bravo.handTroops[0].id }, { siteId: 5 }]);
+
+  assert.equal(room.phase, 'planning');
+  assert.equal(alpha.handTroops.length, 8);
+  assert.deepEqual(alpha.sites.filter((site) => site.kind === 'real').map((site) => site.defenders.length), [0, 0]);
+  assert.equal(bravo.handTroops.length, 7);
+  assert.deepEqual(bravo.sites.filter((site) => site.kind === 'real').map((site) => site.defenders.length), [1, 0]);
 });
 
 test('troop deck contains twenty plain unit types with matching portraits', () => {
@@ -128,10 +144,11 @@ test('winning platoon destroys a bunker and loses one random attacker', () => {
   const returning = room.missions.find((mission) => mission.ownerId === alpha.id);
   assert.equal(returning.troops.length, 1);
   assert.equal(alpha.bunkersDestroyed, 1);
-  assert.equal(alpha.score, 2);
+  assert.equal(gameScore(alpha), 3);
+  assert.equal(serializeState(room, alpha.id).me.score, 3);
 });
 
-test('UAV reports anonymous individual bunker powers without counts or locations', () => {
+test('UAV reports anonymous total bunker defenses without counts or locations', () => {
   const { room, alpha, bravo } = setupRoom();
   const defenses = bravo.sites.filter((site) => site.kind === 'real').flatMap((site) => site.defenders);
   defenses[0].power = 7;
@@ -144,10 +161,11 @@ test('UAV reports anonymous individual bunker powers without counts or locations
   assert.deepEqual(alpha.uavReport, {
     targetId: bravo.id,
     day: 1,
-    bunkerPowers: [4, 7]
+    bunkerDefenses: [6, 9]
   });
   assert.equal('defenderCount' in alpha.uavReport, false);
   assert.equal('combinedPower' in alpha.uavReport, false);
+  assert.equal('bunkerPowers' in alpha.uavReport, false);
 });
 
 test('minefield removes the incoming troop with the greatest battle power', () => {
@@ -229,6 +247,33 @@ test('Body Enhancers grant power and mobility together', () => {
   assert.equal(troop.upgrade, 'body');
 });
 
+test('Air Raid attacks immediately and surviving troops begin their return', () => {
+  const { room, alpha, bravo } = setupRoom();
+  const bunker = bravo.sites.find((site) => site.siteId === 1);
+  bunker.defenders[0].power = 1;
+  const attackers = alpha.handTroops.slice(0, 2);
+  attackers[0].power = 10;
+  attackers[1].power = 9;
+  attackers.forEach((troop) => { troop.mobility = 3; });
+  alpha.handTech = [{ id: 'air_test', type: 'air_raid', name: 'Air Raid' }];
+
+  submitOrder(room, alpha.id, {
+    type: 'tech',
+    techId: 'air_test',
+    siteId: 1,
+    troopIds: attackers.map((troop) => troop.id)
+  });
+  pass(room, bravo);
+
+  assert.equal(bunker.kind, 'destroyed');
+  assert.equal(alpha.handTech.length, 0);
+  const returning = room.missions.find((mission) => mission.ownerId === alpha.id);
+  assert.equal(returning.phase, 'return');
+  assert.equal(returning.airRaid, true);
+  assert.equal(returning.troops.length, 1);
+  assert.ok(serializeState(room, alpha.id).events.some((event) => event.text.includes('contact was immediate')));
+});
+
 test('fortification can add two troops at once when a bunker has two open slots', () => {
   const { room, alpha, bravo } = setupRoom();
   const bunker = alpha.sites.find((site) => site.siteId === 1);
@@ -274,8 +319,65 @@ test('expired order clock auto-passes missing players and advances the day', () 
   assert.equal(alpha.order, null);
   assert.equal(bravo.order, null);
   assert.deepEqual(room.transition.missedPlayerIds, [bravo.id]);
-  const bravoMiss = serializeState(room, bravo.id).events.find((event) => event.text.includes('You missed the order window'));
+  const bravoView = serializeState(room, bravo.id);
+  const alphaView = serializeState(room, alpha.id);
+  const bravoMiss = bravoView.events.find((event) => event.text.includes('You missed the order window'));
   assert.equal(bravoMiss.tone, 'danger');
+  assert.equal(bravoView.room.transition.missedOrder, true);
+  assert.equal(alphaView.room.transition.missedOrder, false);
+  assert.equal('missedPlayerIds' in bravoView.room.transition, false);
+  assert.equal(alphaView.events.some((event) => event.text.includes('missed the order window')), false);
+});
+
+test('three consecutive missed order windows cause a private forfeit', () => {
+  const { room, alpha, bravo } = setupRoom();
+
+  for (let miss = 1; miss <= 3; miss += 1) {
+    pass(room, alpha);
+    room.deadline = Date.now() - 1;
+    assert.equal(expirePlanning(room), true);
+    assert.equal(bravo.consecutiveMissedOrders, miss);
+  }
+
+  assert.equal(room.phase, 'finished');
+  assert.equal(room.endReason, 'missed-orders');
+  assert.equal(bravo.forfeited, true);
+  assert.deepEqual(room.winnerIds, [alpha.id]);
+  assert.deepEqual(room.forfeitPlayerIds, [bravo.id]);
+  const alphaEvents = serializeState(room, alpha.id).events;
+  assert.equal(alphaEvents.some((event) => event.text.includes('missed the order window')), false);
+  assert.ok(alphaEvents.some((event) => event.text === 'Bravo forfeited the operation.'));
+});
+
+test('a missed-order forfeit removes one commander but a three-player operation continues', () => {
+  const { room, player: alpha } = createRoom('MISS3', 'Alpha', { rng: () => 0.19 });
+  const bravo = addPlayer(room, 'Bravo');
+  const charlie = addPlayer(room, 'Charlie');
+  startGame(room, alpha.id);
+  for (const player of [alpha, bravo, charlie]) {
+    submitSetup(room, player.id, [{ siteId: 1 }, { siteId: 2 }]);
+  }
+  bravo.consecutiveMissedOrders = 2;
+
+  pass(room, alpha);
+  pass(room, charlie);
+  room.deadline = Date.now() - 1;
+  expirePlanning(room);
+
+  assert.equal(room.phase, 'planning');
+  assert.equal(room.day, 2);
+  assert.equal(bravo.forfeited, true);
+  assert.equal(alpha.targetId, charlie.id);
+  assert.equal(charlie.targetId, alpha.id);
+  assert.equal(serializeState(room, alpha.id).players.find((player) => player.id === bravo.id).forfeited, true);
+  assert.equal(serializeState(room, alpha.id).events.some((event) => event.text.includes('missed the order window')), false);
+});
+
+test('submitting an order resets the consecutive missed-order streak', () => {
+  const { room, bravo } = setupRoom();
+  bravo.consecutiveMissedOrders = 2;
+  pass(room, bravo);
+  assert.equal(bravo.consecutiveMissedOrders, 0);
 });
 
 test('reinforcements arrive on Days 5 and 10 at the approved cadence', () => {
@@ -321,6 +423,10 @@ test('a newly launched attack does not expose a hologram before travel completes
   pass(room, alpha);
   pass(room, bravo);
   assert.equal(decoy.hologram, false);
+  const contact = serializeState(room, bravo.id).events.find((event) => event.text.includes('struck a HOLOGRAM'));
+  assert.ok(contact);
+  assert.equal(contact.day, 2);
+  assert.equal(bravo.intel[alpha.id][3].status, 'clear');
 });
 
 test('remaining tech effects support deception, relocation, and bunker clearing', () => {
@@ -383,6 +489,23 @@ test('destroying both target bunkers ends a two-player match', () => {
   assert.equal(loserMessage.tone, 'danger');
 });
 
+test('Day 30 uses only bunkers remaining plus bunkers destroyed and equal totals draw', () => {
+  const { room, alpha, bravo } = setupRoom();
+  alpha.handTroops[0].power = 100;
+  bravo.handTroops[0].power = 1;
+  room.day = 30;
+
+  pass(room, alpha);
+  pass(room, bravo);
+
+  assert.equal(room.phase, 'finished');
+  assert.equal(room.endReason, 'day-limit');
+  assert.equal(room.isDraw, true);
+  assert.equal(alpha.finalScore, 2);
+  assert.equal(bravo.finalScore, 2);
+  assert.deepEqual(new Set(room.winnerIds), new Set([alpha.id, bravo.id]));
+});
+
 test('a two-player quit ends the game with a forfeit winner', () => {
   const { room, alpha, bravo } = setupRoom();
   quitGame(room, bravo.id);
@@ -437,7 +560,7 @@ test('HTTP room API supports create, join, and authenticated live state', async 
   const healthResponse = await fetch(`${base}/api/health`);
   const health = await healthResponse.json();
   assert.equal(health.ok, true);
-  assert.equal(health.build, '0.4.0');
+  assert.equal(health.build, '0.5.0');
   assert.equal(health.mode, 'local');
   assert.ok(Array.isArray(health.lanUrls));
 

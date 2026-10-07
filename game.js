@@ -15,6 +15,7 @@ const DEFAULT_ORDER_SECONDS = 45;
 const DEFAULT_FIRST_ORDER_SECONDS = 90;
 const DAY_TRANSITION_MS = 3_000;
 const DEFAULT_MAX_DAYS = 30;
+const MAX_CONSECUTIVE_MISSED_ORDERS = 3;
 
 const TROOP_TEMPLATES = [
   { unit: 'Fodder', power: 1, mobility: 2, art: 0 },
@@ -48,7 +49,7 @@ const TECH_DEFINITIONS = {
   uav: {
     name: 'UAV Sweep',
     icon: 'UAV',
-    description: 'Reveal each enemy bunker\'s troop power as anonymous readings.'
+    description: 'Reveal each enemy bunker\'s total defense as anonymous readings.'
   },
   minefield: {
     name: 'Minefield',
@@ -74,6 +75,11 @@ const TECH_DEFINITIONS = {
     name: 'Signal Interceptor',
     icon: 'SIG',
     description: 'For five days, detect platoons approaching any of your five sites.'
+  },
+  air_raid: {
+    name: 'Air Raid',
+    icon: 'AIR',
+    description: 'Deploy 1–3 troops to attack one enemy site immediately.'
   }
 };
 
@@ -230,6 +236,7 @@ function newPlayer(name, index) {
     connected: true,
     active: true,
     eliminated: false,
+    forfeited: false,
     quit: false,
     eliminatedDay: null,
     handTroops: [],
@@ -240,12 +247,12 @@ function newPlayer(name, index) {
     targetId: null,
     hunterId: null,
     order: null,
+    consecutiveMissedOrders: 0,
     radioHackerUntil: 0,
     intel: {},
     uavReport: null,
     bunkersDestroyed: 0,
     eliminations: 0,
-    score: 0,
     finalScore: null
   };
 }
@@ -271,8 +278,10 @@ function createRoom(code, hostName, options = {}) {
     missions: [],
     events: [],
     winnerIds: [],
+    isDraw: false,
     endReason: null,
     quitPlayerId: null,
+    forfeitPlayerIds: [],
     revision: 0,
     createdAt: Date.now(),
     rng: options.rng || Math.random
@@ -341,22 +350,28 @@ function startGame(room, requesterId) {
     player.mulliganUsed = false;
     player.active = true;
     player.eliminated = false;
+    player.forfeited = false;
     player.quit = false;
     player.eliminatedDay = null;
     player.setupComplete = false;
     player.order = null;
+    player.consecutiveMissedOrders = 0;
     player.radioHackerUntil = 0;
     player.intel = {};
     player.uavReport = null;
     player.bunkersDestroyed = 0;
     player.eliminations = 0;
-    player.score = 0;
     player.finalScore = null;
   }
+  room.winnerIds = [];
+  room.isDraw = false;
+  room.endReason = null;
+  room.quitPlayerId = null;
+  room.forfeitPlayerIds = [];
   assignTargets(room);
   room.status = 'setup';
   room.phase = 'setup';
-  addEvent(room, 'Operation started. Select two real bunkers and assign one starting defender to each.', 'system', 'all');
+  addEvent(room, 'Operation started. Select two real bunkers; starting defenders are optional.', 'system', 'all');
   room.revision += 1;
 }
 
@@ -403,19 +418,20 @@ function submitSetup(room, playerId, bunkers) {
   if (player.setupComplete) throw new GameError('Your deployment is already locked.');
   if (!Array.isArray(bunkers) || bunkers.length !== 2) throw new GameError('Select exactly two bunkers.');
   const siteIds = bunkers.map((entry) => Number(entry.siteId));
-  const troopIds = bunkers.map((entry) => entry.troopId);
+  const troopIds = bunkers.map((entry) => entry.troopId || null).filter(Boolean);
   if (new Set(siteIds).size !== 2 || siteIds.some((siteId) => !SITE_IDS.includes(siteId))) {
     throw new GameError('Select two different bunker sites.');
   }
-  if (new Set(troopIds).size !== 2) throw new GameError('Assign a different defender to each bunker.');
+  if (new Set(troopIds).size !== troopIds.length) throw new GameError('A troop can defend only one starting bunker.');
   const troops = troopIds.map((troopId) => player.handTroops.find((troop) => troop.id === troopId));
   if (troops.some((troop) => !troop)) throw new GameError('A selected defender is no longer available.');
+  const troopsById = new Map(troops.map((troop) => [troop.id, troop]));
 
   player.handTroops = player.handTroops.filter((troop) => !troopIds.includes(troop.id));
-  bunkers.forEach((entry, index) => {
+  bunkers.forEach((entry) => {
     const site = player.sites.find((candidate) => candidate.siteId === Number(entry.siteId));
     site.kind = 'real';
-    site.defenders = [troops[index]];
+    site.defenders = entry.troopId ? [troopsById.get(entry.troopId)] : [];
   });
   player.setupComplete = true;
   addEvent(room, `${player.name} locked their bunker network.`, 'system', 'all');
@@ -529,6 +545,13 @@ function normalizeOrder(room, player, raw) {
       }
       case 'radio_hacker':
         break;
+      case 'air_raid': {
+        targetOf(room, player);
+        order.siteId = validateSite(raw.siteId);
+        const troops = findTroopsInHand(player, raw.troopIds, 1, MAX_PLATOON);
+        order.troopIds = troops.map((troop) => troop.id);
+        break;
+      }
       default:
         throw new GameError('Unknown technology card.');
     }
@@ -543,6 +566,7 @@ function submitOrder(room, playerId, rawOrder) {
   if (!player || player.eliminated) throw new GameError('You are not an active commander.');
   if (player.order) throw new GameError('Your order is already locked.');
   player.order = normalizeOrder(room, player, rawOrder);
+  player.consecutiveMissedOrders = 0;
   addEvent(room, 'Order locked. Waiting for other commanders.', 'success', [player.id]);
   room.revision += 1;
   if (activePlayers(room).every((candidate) => candidate.order)) resolveDay(room);
@@ -601,18 +625,18 @@ function processImmediateOrder(room, player, order) {
     }
   } else if (card.type === 'uav' && target) {
     const realSites = target.sites.filter((site) => site.kind === 'real');
-    const bunkerPowers = shuffle(
-      realSites.map((site) => site.defenders.reduce((sum, troop) => sum + troop.power, 0)),
+    const bunkerDefenses = shuffle(
+      realSites.map((site) => BUNKER_ARMOR + site.defenders.reduce((sum, troop) => sum + troop.power, 0)),
       room.rng
     );
     player.uavReport = {
       targetId: target.id,
       day: room.day,
-      bunkerPowers
+      bunkerDefenses
     };
     addEvent(
       room,
-      `UAV report: anonymous bunker power reading${bunkerPowers.length === 1 ? '' : 's'} ${bunkerPowers.join(' and ')}. Locations and bunker armor are excluded.`,
+      `UAV report: anonymous total defense reading${bunkerDefenses.length === 1 ? '' : 's'} ${bunkerDefenses.join(' and ')}. Locations are excluded.`,
       'intel',
       [player.id]
     );
@@ -670,6 +694,39 @@ function processImmediateOrder(room, player, order) {
   } else if (card.type === 'radio_hacker') {
     player.radioHackerUntil = Math.max(player.radioHackerUntil, room.day + 4);
     addEvent(room, `Signal Interceptor is monitoring all five sites through Day ${player.radioHackerUntil}.`, 'success', [player.id]);
+  } else if (card.type === 'air_raid' && target) {
+    const troops = removeTroopsFromHand(player, order.troopIds);
+    if (!troops.length || target.eliminated) {
+      addTroopsToHand(room, player, troops);
+      addEvent(room, 'Air Raid canceled because its target was no longer available.', 'warning', [player.id]);
+      return;
+    }
+    const travelTime = Math.max(...troops.map(travelDays));
+    const mission = {
+      id: id('ms_'),
+      type: 'attack',
+      phase: 'outbound',
+      ownerId: player.id,
+      targetId: target.id,
+      targetSiteId: order.siteId,
+      troops,
+      travelTime,
+      eta: 0,
+      launchedDay: room.day,
+      report: null,
+      airRaid: true
+    };
+    addEvent(
+      room,
+      `Air Raid deployed ${troops.length} troop${troops.length === 1 ? '' : 's'} to ${target.name}'s Site ${order.siteId}; contact was immediate.`,
+      'info',
+      [player.id]
+    );
+    const returning = resolveAttackArrival(room, mission);
+    if (returning) {
+      returning.returnStartedDay = room.day;
+      room.missions.push(returning);
+    }
   }
 }
 
@@ -769,7 +826,6 @@ function resolveAttackArrival(room, mission) {
       site.hologram = false;
       site.mine = false;
       attacker.bunkersDestroyed += 1;
-      attacker.score += 2;
       target.pendingEliminatedBy = attacker.id;
       setIntel(attacker, target.id, site.siteId, 'destroyed', room.day, 'Bunker destroyed.');
 
@@ -812,7 +868,19 @@ function resolveAttackArrival(room, mission) {
 
   if (site.hologram) {
     site.hologram = false;
-    addEvent(room, `Your hologram at Site ${site.siteId} diverted an enemy attack successfully, then collapsed.`, 'success', [target.id]);
+    setIntel(attacker, target.id, site.siteId, 'clear', room.day, 'Attack exposed and destroyed a hologram.');
+    addPerspectiveEvents(room, [
+      {
+        playerId: attacker.id,
+        text: `Your attack on Site ${site.siteId} struck a HOLOGRAM. The decoy collapsed and your platoon began returning.`,
+        tone: 'intel'
+      },
+      {
+        playerId: target.id,
+        text: `Your hologram at Site ${site.siteId} diverted an enemy attack successfully, then collapsed.`,
+        tone: 'success'
+      }
+    ]);
     return returnMission(mission, mission.troops, 'decoy');
   }
 
@@ -846,8 +914,7 @@ function completeReturn(room, mission) {
     }
   } else {
     if (mission.report === 'decoy') {
-      setIntel(owner, mission.targetId, mission.targetSiteId, 'clear', room.day, 'Attack exposed and destroyed a hologram.');
-      addEvent(room, `Your attack on Site ${mission.targetSiteId} hit a HOLOGRAM. The surviving platoon returned.`, 'danger', [owner.id]);
+      addEvent(room, `Your platoon returned from Site ${mission.targetSiteId} after exposing a hologram.`, 'info', [owner.id]);
     } else if (mission.report === 'clear') {
       setIntel(owner, mission.targetId, mission.targetSiteId, 'clear', room.day, 'Attack found no active bunker.');
       addEvent(room, `Your attack on Site ${mission.targetSiteId} found it EMPTY. The platoon returned.`, 'danger', [owner.id]);
@@ -863,6 +930,10 @@ function advanceMissions(room) {
   room.missions = [];
   for (const mission of advancing) {
     if (mission.phase === 'outbound' && mission.launchedDay === room.day) {
+      next.push(mission);
+      continue;
+    }
+    if (mission.phase === 'return' && mission.returnStartedDay === room.day) {
       next.push(mission);
       continue;
     }
@@ -887,6 +958,24 @@ function remainingBunkers(player) {
   return player.sites.filter((site) => site.kind === 'real').length;
 }
 
+function gameScore(player) {
+  return remainingBunkers(player) + player.bunkersDestroyed;
+}
+
+function forfeitMissedOrders(room, player) {
+  player.forfeited = true;
+  player.eliminated = true;
+  player.active = false;
+  player.eliminatedDay = room.day;
+  player.order = null;
+  if (!room.forfeitPlayerIds.includes(player.id)) room.forfeitPlayerIds.push(player.id);
+  addEvent(room, 'You forfeited after missing three consecutive order windows.', 'danger', [player.id]);
+  const observers = room.players
+    .filter((candidate) => candidate.id !== player.id && !candidate.eliminated)
+    .map((candidate) => candidate.id);
+  if (observers.length) addEvent(room, `${player.name} forfeited the operation.`, 'warning', observers);
+}
+
 function processEliminations(room) {
   for (const player of room.players) {
     if (!player.eliminated && player.setupComplete && remainingBunkers(player) === 0) {
@@ -896,11 +985,10 @@ function processEliminations(room) {
       const eliminator = getPlayer(room, player.pendingEliminatedBy);
       if (eliminator && !eliminator.eliminated) {
         eliminator.eliminations += 1;
-        eliminator.score += 2;
         addPerspectiveEvents(room, [
           {
             playerId: eliminator.id,
-            text: `You eliminated ${player.name} and earned the command-ring bonus.`,
+            text: `You eliminated ${player.name} by destroying their final bunker.`,
             tone: 'success'
           },
           {
@@ -946,36 +1034,31 @@ function endGame(room, reason) {
   room.endReason = reason;
   room.quitPlayerId = null;
   for (const player of room.players) {
-    player.finalScore = player.score + remainingBunkers(player);
+    player.finalScore = gameScore(player);
   }
   const active = activePlayers(room);
-  if (active.length === 1 && reason === 'last-standing') {
+  room.isDraw = false;
+  if (active.length === 1 && ['last-standing', 'missed-orders'].includes(reason)) {
     room.winnerIds = [active[0].id];
   } else {
-    const eligible = active.length ? active : room.players;
+    const stillEligible = room.players.filter((player) => !player.forfeited && !player.quit);
+    const eligible = active.length ? active : stillEligible.length ? stillEligible : room.players;
     const topScore = Math.max(...eligible.map((player) => player.finalScore));
-    let winners = eligible.filter((player) => player.finalScore === topScore);
-    if (winners.length > 1) {
-      const maxBunkers = Math.max(...winners.map(remainingBunkers));
-      winners = winners.filter((player) => remainingBunkers(player) === maxBunkers);
-    }
-    if (winners.length > 1) {
-      const totalPower = (player) => [
-        ...player.handTroops,
-        ...player.sites.flatMap((site) => site.defenders)
-      ].reduce((sum, troop) => sum + troop.power, 0);
-      const maxPower = Math.max(...winners.map(totalPower));
-      winners = winners.filter((player) => totalPower(player) === maxPower);
-    }
+    const winners = eligible.filter((player) => player.finalScore === topScore);
     room.winnerIds = winners.map((player) => player.id);
+    room.isDraw = winners.length > 1;
   }
   const winnerNames = room.winnerIds.map((winnerId) => getPlayer(room, winnerId)?.name).filter(Boolean);
   const winnerIdSet = new Set(room.winnerIds);
   for (const player of room.players) {
-    if (winnerIdSet.has(player.id)) {
+    if (room.isDraw && winnerIdSet.has(player.id)) {
+      addEvent(room, 'The operation ended in a draw on bunker score.', 'info', [player.id]);
+    } else if (room.isDraw) {
+      addEvent(room, `${winnerNames.join(' & ')} finished level on bunker score. Your operation ended in defeat.`, 'danger', [player.id]);
+    } else if (winnerIdSet.has(player.id)) {
       addEvent(
         room,
-        winnerNames.length === 1 ? 'You won the operation.' : `You share victory with ${winnerNames.filter((name) => name !== player.name).join(' & ')}.`,
+        'You won the operation.',
         'success',
         [player.id]
       );
@@ -1016,9 +1099,10 @@ function quitGame(room, playerId) {
   room.transition = null;
   room.endReason = 'quit';
   room.quitPlayerId = player.id;
+  room.isDraw = false;
 
   for (const candidate of room.players) {
-    candidate.finalScore = candidate.score + remainingBunkers(candidate);
+    candidate.finalScore = gameScore(candidate);
   }
 
   if (room.players.length === 2) {
@@ -1039,30 +1123,25 @@ function quitGame(room, playerId) {
 function resolveDay(room) {
   if (room.phase !== 'planning') return;
   const missedPlayerIds = [];
+  const forfeitedThisDay = [];
   for (const player of activePlayers(room)) {
     if (!player.order) {
       player.order = { type: 'pass', automatic: true };
       missedPlayerIds.push(player.id);
-      addEvent(room, 'You missed the order window and automatically passed.', 'danger', [player.id]);
-    }
-  }
-  if (missedPlayerIds.length) {
-    const missedNames = missedPlayerIds.map((playerId) => getPlayer(room, playerId)?.name).filter(Boolean);
-    const observers = activePlayers(room)
-      .filter((player) => !missedPlayerIds.includes(player.id))
-      .map((player) => player.id);
-    if (observers.length) {
+      player.consecutiveMissedOrders += 1;
       addEvent(
         room,
-        `${missedNames.join(' and ')} missed the order window.`,
-        'info',
-        observers
+        `You missed the order window and automatically passed (${player.consecutiveMissedOrders}/${MAX_CONSECUTIVE_MISSED_ORDERS} consecutive).`,
+        'danger',
+        [player.id]
       );
+      if (player.consecutiveMissedOrders >= MAX_CONSECUTIVE_MISSED_ORDERS) forfeitedThisDay.push(player);
     }
   }
+  for (const player of forfeitedThisDay) forfeitMissedOrders(room, player);
 
   const ordered = activePlayers(room);
-  const immediatePriority = ['fortify', 'cyberkinetics', 'hologram', 'minefield', 'radio_hacker', 'teleporter', 'uav', 'napalm'];
+  const immediatePriority = ['fortify', 'cyberkinetics', 'hologram', 'minefield', 'radio_hacker', 'teleporter', 'uav', 'napalm', 'air_raid'];
   for (const priority of immediatePriority) {
     for (const player of ordered) {
       const order = player.order;
@@ -1100,7 +1179,7 @@ function resolveDay(room) {
   for (const player of room.players) player.order = null;
   const active = activePlayers(room);
   if (active.length <= 1) {
-    endGame(room, 'last-standing');
+    endGame(room, forfeitedThisDay.length ? 'missed-orders' : 'last-standing');
   } else if (room.day >= room.maxDays) {
     endGame(room, 'day-limit');
   } else {
@@ -1131,13 +1210,14 @@ function publicPlayer(player) {
     color: player.color,
     connected: player.connected,
     eliminated: player.eliminated,
+    forfeited: player.forfeited,
     quit: player.quit,
     setupComplete: player.setupComplete,
     orderSubmitted: Boolean(player.order),
     bunkersRemaining: player.setupComplete ? remainingBunkers(player) : null,
     bunkersDestroyed: player.bunkersDestroyed,
     eliminations: player.eliminations,
-    score: player.score,
+    score: gameScore(player),
     finalScore: player.finalScore,
     sites: player.sites.map((site) => ({ siteId: site.siteId, destroyed: site.kind === 'destroyed' }))
   };
@@ -1164,6 +1244,12 @@ function serializeState(room, playerId) {
   const target = getPlayer(room, player.targetId);
   const hunter = getPlayer(room, player.hunterId);
   const intel = target ? (player.intel[target.id] || {}) : {};
+  const transition = room.transition ? {
+    completedDay: room.transition.completedDay,
+    nextDay: room.transition.nextDay,
+    until: room.transition.until,
+    missedOrder: room.transition.missedPlayerIds.includes(player.id)
+  } : null;
   return {
     room: {
       code: room.code,
@@ -1175,11 +1261,13 @@ function serializeState(room, playerId) {
       orderSeconds: room.orderSeconds,
       firstOrderSeconds: room.firstOrderSeconds,
       deadline: room.deadline,
-      transition: room.transition,
+      transition,
       revision: room.revision,
       winnerIds: room.winnerIds,
+      isDraw: room.isDraw,
       endReason: room.endReason,
-      quitPlayerId: room.quitPlayerId
+      quitPlayerId: room.quitPlayerId,
+      forfeitPlayerIds: room.forfeitPlayerIds
     },
     me: {
       id: player.id,
@@ -1187,10 +1275,12 @@ function serializeState(room, playerId) {
       color: player.color,
       isHost: room.hostId === player.id,
       eliminated: player.eliminated,
+      forfeited: player.forfeited,
       quit: player.quit,
       mulliganUsed: player.mulliganUsed,
       setupComplete: player.setupComplete,
       order: player.order,
+      consecutiveMissedOrders: player.consecutiveMissedOrders,
       handTroops: player.handTroops,
       handTech: player.handTech,
       sites: player.sites,
@@ -1198,7 +1288,7 @@ function serializeState(room, playerId) {
       hunterId: player.hunterId,
       radioHackerUntil: player.radioHackerUntil,
       uavReport: player.uavReport,
-      score: player.score,
+      score: gameScore(player),
       finalScore: player.finalScore,
       missions: room.missions.filter((mission) => mission.ownerId === player.id).map((mission) => missionView(room, mission))
     },
@@ -1211,7 +1301,8 @@ function serializeState(room, playerId) {
       maxGarrison: MAX_GARRISON,
       maxPlatoon: MAX_PLATOON,
       maxTroopHand: MAX_TROOP_HAND,
-      maxTechHand: MAX_TECH_HAND
+      maxTechHand: MAX_TECH_HAND,
+      maxConsecutiveMissedOrders: MAX_CONSECUTIVE_MISSED_ORDERS
     }
   };
 }
@@ -1233,5 +1324,6 @@ module.exports = {
   serializeState,
   getPlayer,
   remainingBunkers,
+  gameScore,
   travelDays
 };

@@ -23,7 +23,7 @@ const {
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '0.0.0.0';
-const BUILD_VERSION = '0.4.0';
+const BUILD_VERSION = '0.5.0';
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const BASE_SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
